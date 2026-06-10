@@ -1,0 +1,114 @@
+# OpenWA + Ollama + AI bot — one always-on stack for Portainer.
+#
+# Deploy via Portainer → Stacks → Add stack → Repository:
+#   Repository URL : <your GitHub fork of this repo>
+#   Reference      : refs/heads/Test_edoardo   (or your branch)
+#   Compose path   : examples/ollama-bot/stack.yml
+# Then set the variables from stack.env.example in Portainer's "Environment variables".
+#
+# See DEPLOY-PORTAINER.md for the full step-by-step (QR scan, getting the API key, webhook).
+
+name: openwa-ollama
+
+services:
+  # ===== OpenWA API (persists WhatsApp auth + DB + media in one volume) =====
+  openwa-api:
+    build:
+      context: ../.. # repo root — builds OpenWA from its Dockerfile
+      dockerfile: Dockerfile
+    # Don't want to build? If the image is published & public, comment out `build:`
+    # above and use the prebuilt image instead:
+    # image: ghcr.io/rmyndharis/openwa:latest
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=2785
+      - DATABASE_TYPE=sqlite
+      - DATABASE_NAME=/app/data/openwa.sqlite
+      - DATABASE_SYNCHRONIZE=true
+      - ENGINE_TYPE=whatsapp-web.js
+      - SESSION_DATA_PATH=/app/data/sessions
+      - PUPPETEER_HEADLESS=true
+      - PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=/app/data/media
+      - PLUGINS_DIR=/app/data/plugins
+    volumes:
+      # The one volume that makes "always run" work: WhatsApp session auth, the
+      # SQLite DB, and media all live here, so you scan the QR only once.
+      - openwa-data:/app/data
+    ports:
+      # Bound to localhost on the server (private). Reach it via an SSH tunnel for
+      # the one-time QR scan / Swagger — see DEPLOY-PORTAINER.md.
+      - '127.0.0.1:${API_PORT:-2785}:2785'
+    expose:
+      - '2785'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://localhost:2785/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # ===== Ollama (local LLM) =====
+  ollama:
+    image: ollama/ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama # pulled models persist here
+    expose:
+      - '11434'
+    # ---- GPU: uncomment ONLY after you've cleared GPU use with the cluster admin.
+    #      Requires the NVIDIA Container Toolkit on the host. ----
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: ['gpu']
+
+  # ===== One-shot: pull the model into ollama-data on (re)deploy, then exit =====
+  ollama-pull:
+    image: ollama/ollama
+    depends_on:
+      - ollama
+    entrypoint: ['/bin/sh', '-c']
+    command: ['sleep 5 && OLLAMA_HOST=http://ollama:11434 ollama pull ${OLLAMA_MODEL:-llama3.2:3b}']
+    restart: 'no'
+
+  # ===== The AI bot (webhook -> Ollama -> reply) =====
+  bot:
+    build:
+      context: . # examples/ollama-bot — Dockerfile in this folder
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - openwa-api
+      - ollama
+    environment:
+      # Everything talks by service name on this stack's network — no host.docker.internal.
+      - OPENWA_URL=http://openwa-api:2785
+      - OPENWA_API_KEY=${OPENWA_API_KEY:-} # set after first boot (see deploy guide)
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - BOT_PORT=3001
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      - SYSTEM_PROMPT=${SYSTEM_PROMPT:-You are a friendly WhatsApp assistant. Reply concisely in the user's language.}
+      - IGNORE_GROUPS=${IGNORE_GROUPS:-true}
+    expose:
+      - '3001'
+
+volumes:
+  openwa-data:
+  ollama-data:
+
+networks:
+  default:
+    name: openwa-ollama-net
