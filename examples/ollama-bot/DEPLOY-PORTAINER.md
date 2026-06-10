@@ -33,6 +33,12 @@ branch to GitHub so Portainer can reach it.
 | Repository reference | `refs/heads/Test_edoardo` (your branch) |
 | Compose path | `examples/ollama-bot/stack.yml` |
 
+> **Host can't build images?** If Deploy fails with a BuildKit error
+> (`http2: frame too large … looked like an HTTP/1.1 header`), switch the
+> **Compose path** to `examples/ollama-bot/stack.images.yml` — a no-build variant
+> that pulls prebuilt images and fetches the bot script at runtime. Everything else
+> below is identical.
+
 ## 3. Set environment variables
 In the stack's **Environment variables** (values from [stack.env.example](stack.env.example)):
 - `WEBHOOK_SECRET` — a long random string (set now)

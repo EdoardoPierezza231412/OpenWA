@@ -1,0 +1,110 @@
+# No-build variant of stack.yml — pulls prebuilt images instead of building.
+#
+# Use this when the Docker host can't build images (e.g. the BuildKit/Agent error
+# "http2: frame too large ... looked like an HTTP/1.1 header"). Nothing is built:
+#   - openwa-api : prebuilt public image  ghcr.io/rmyndharis/openwa
+#   - ollama     : official ollama/ollama image
+#   - bot        : stock node image that fetches bot.mjs from this public fork at start
+#
+# Deploy exactly like stack.yml, but set Portainer's "Compose path" to:
+#   examples/ollama-bot/stack.images.yml
+# See DEPLOY-PORTAINER.md for the rest (env vars, QR scan, webhook).
+
+name: openwa-ollama
+
+services:
+  # ===== OpenWA API (prebuilt image — no build) =====
+  openwa-api:
+    image: ghcr.io/rmyndharis/openwa:0.1.6
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=2785
+      - DATABASE_TYPE=sqlite
+      - DATABASE_NAME=/app/data/openwa.sqlite
+      - DATABASE_SYNCHRONIZE=true
+      - ENGINE_TYPE=whatsapp-web.js
+      - SESSION_DATA_PATH=/app/data/sessions
+      - PUPPETEER_HEADLESS=true
+      - PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=/app/data/media
+      - PLUGINS_DIR=/app/data/plugins
+    volumes:
+      - openwa-data:/app/data # WhatsApp session + DB + media → scan QR once
+    ports:
+      - '127.0.0.1:${API_PORT:-2785}:2785'
+    expose:
+      - '2785'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://localhost:2785/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # ===== Ollama (local LLM) =====
+  ollama:
+    image: ollama/ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    expose:
+      - '11434'
+    # ---- GPU: uncomment ONLY after clearing GPU use with the cluster admin ----
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: ['gpu']
+
+  # ===== One-shot: pull the model into ollama-data, then exit =====
+  ollama-pull:
+    image: ollama/ollama
+    depends_on:
+      - ollama
+    entrypoint: ['/bin/sh', '-c']
+    command: ['sleep 5 && OLLAMA_HOST=http://ollama:11434 ollama pull ${OLLAMA_MODEL:-llama3.2:3b}']
+    restart: 'no'
+
+  # ===== The AI bot — stock node image, fetches bot.mjs from the public fork =====
+  bot:
+    image: node:22-alpine
+    restart: unless-stopped
+    depends_on:
+      - openwa-api
+      - ollama
+    environment:
+      # Raw URL of bot.mjs on this public fork/branch (no build, no registry needed).
+      - BOT_SRC=https://raw.githubusercontent.com/EdoardoPierezza231412/OpenWA/Test_edoardo/examples/ollama-bot/bot.mjs
+      - OPENWA_URL=http://openwa-api:2785
+      - OPENWA_API_KEY=${OPENWA_API_KEY:-} # set after first boot (see deploy guide)
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - BOT_PORT=3001
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      - SYSTEM_PROMPT=${SYSTEM_PROMPT:-You are a friendly WhatsApp assistant. Reply concisely in the user's language.}
+      - IGNORE_GROUPS=${IGNORE_GROUPS:-true}
+    expose:
+      - '3001'
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - >
+        node -e "fetch(process.env.BOT_SRC).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.text()}).then(t=>require('fs').writeFileSync('/tmp/bot.mjs',t)).catch(e=>{console.error('fetch bot.mjs failed:',e.message);process.exit(1)})"
+        && node /tmp/bot.mjs
+
+volumes:
+  openwa-data:
+  ollama-data:
+
+networks:
+  default:
+    name: openwa-ollama-net
