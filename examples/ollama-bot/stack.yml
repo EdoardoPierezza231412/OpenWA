@@ -16,6 +16,7 @@ services:
     build:
       context: ../.. # repo root — builds OpenWA from its Dockerfile
       dockerfile: Dockerfile
+    pull_policy: build # Portainer: (re)build this image on the standalone host
     # Don't want to build? If the image is published & public, comment out `build:`
     # above and use the prebuilt image instead:
     # image: ghcr.io/rmyndharis/openwa:latest
@@ -88,6 +89,7 @@ services:
     build:
       context: . # examples/ollama-bot — Dockerfile in this folder
       dockerfile: Dockerfile
+    pull_policy: build # Portainer: (re)build this image on the standalone host
     restart: unless-stopped
     depends_on:
       - openwa-api
